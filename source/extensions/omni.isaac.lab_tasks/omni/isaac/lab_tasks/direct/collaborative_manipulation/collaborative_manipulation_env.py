@@ -3,6 +3,7 @@
 """
 
 import torch
+import matplotlib.pyplot as plt
 
 from collections.abc import Sequence
 
@@ -65,7 +66,7 @@ class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
             )
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0., 0., 0.),
+            pos=(0., 0., 0.05),
             rot=(1., 0., 0., 0.),
             lin_vel=(0., 0., 0.),
             ang_vel=(0., 0., 0.)
@@ -77,7 +78,7 @@ class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
     # scene config
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096,
-        env_spacing=2.0
+        env_spacing=10.0
     )
 
     # task config
@@ -88,9 +89,9 @@ class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
     '''
     decimation = 2
     episode_length_s = 10.0
-    num_agents = 4
+    num_agents = 6
     num_actions = 3 * num_agents
-    num_observations = 13
+    num_observations = 36
 
 class CollaborativeManipulationEnv(DirectRLEnv):
     cfg: CollaborativeManipultionEnvCfg
@@ -121,6 +122,8 @@ class CollaborativeManipulationEnv(DirectRLEnv):
                             self._vx,
                             self._vy,
                             self._w], dim=-1).clone().unsqueeze(-1)
+        
+        self.init_x = self.x.clone()
 
         # Define state-space equation
         self.mu = 0.1
@@ -130,7 +133,11 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         self.r = ((1., 1.),
                   (1., -1.),
                   (-1., 1.),
-                  (-1., -1.))
+                  (-1., -1.),
+                  (0., 1.),
+                  (1., 0.))
+        
+        self.r_obs = torch.Tensor([1, 1, 1, -1, -1, 1, -1, -1, 0, 1, 1, 0]).repeat(self.num_envs, 1).to(self.device)
         
         self.robot_num = self.cfg.num_agents
 
@@ -181,10 +188,12 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # self.actions = actions.clone()
-        self.actions = torch.Tensor([0.1, 0, 0, 0.1, 0, 0, 0.1, 0, 0, 0.1, 0, 0]).to(self.device).repeat(self.num_envs, 1).unsqueeze(-1)
+        self.prev_actions = self.actions
+        self.actions = actions.clone()
+        # self.actions = torch.Tensor([0., 0., 0.1, 0., 0., 0.1, 0., 0., 0.1, 0., 0., 0.1]).to(self.device).repeat(self.num_envs, 1).unsqueeze(-1)
     
     def _apply_action(self) -> None:
+        
         self._u = self.actions.reshape(self.num_envs, self.num_actions, 1)
 
         self.f = torch.cat([U(self.x[:, 3:4, 0]),
@@ -194,18 +203,18 @@ class CollaborativeManipulationEnv(DirectRLEnv):
                             self.x[:, 4:5, 0] * self.x[:, 5:6, 0]
                             ], dim=-1).unsqueeze(-1)
 
-        self._x_dot = self.A @ self.x + self.T @ self.f + self.B @ self._u
+        # Calculate state-space equation
+        self.x_dot = self.A @ self.x + self.T @ self.f + self.B @ self._u
 
-        self.x += self._x_dot * self.physics_dt
+        # Update state variable
+        self.x += self.x_dot * self.physics_dt
         
-        print(self.rod.data.root_state_w[0, :])
-        print("x:", self.x[0, :, 0])
-        print("f", self.f[0, :, 0])
-        print("u", self._u[0, :, 0])
-        print("\n\n\n")
+        # Clip theta(-pi ~ pi)
+        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] >= torch.pi, self.x[:, 2, 0] - torch.pi, self.x[:, 2, 0])
+        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] < -torch.pi, self.x[:, 2, 0] + torch.pi, self.x[:, 2, 0])
 
         self.rod_root_state = torch.cat([self.x[:, 0:2, 0] + self.scene.env_origins[:, 0:2],
-                                     torch.zeros((self.num_envs, 1)).to(self.device),
+                                     0.5 * torch.ones((self.num_envs, 1)).to(self.device),
                                      torch.cos(self.x[:, 2:3, 0]/2).to(self.device),
                                      torch.zeros((self.num_envs, 2)).to(self.device),
                                      torch.sin(self.x[:, 2:3, 0]/2),
@@ -216,26 +225,28 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         self.rod.write_root_state_to_sim(self.rod_root_state)
 
     def _get_observations(self) -> dict:
-         obs = torch.cat(
-             (
-                 self.rod_pos,
-                 self.rod_quat,
-                 self.rod_lin_vel_w,
-                 self.rod_ang_vel_w,
-             ),
-             dim=-1
-         )
-         
-         observations = {"policy": obs}
-         return observations
+        
+        obs = torch.cat(
+            (
+                self.x.squeeze(dim=-1),
+                self.actions,
+                self.r_obs,
+            ),
+            dim=-1,
+        )
+
+        # obs = self.x.squeeze()
+        
+        observations = {"policy": obs}
+        return observations
 
     def _get_rewards(self) -> torch.Tensor:
         total_reward = compute_rewards(
-            self.rod_pos,
-            self.rod_quat,
-            self.rod_lin_vel_w,
-            self.rod_ang_vel_w,
-            self.reset_terminated,
+            self.x[:, :, 0],
+            self.x_dot[:, :, 0],
+            self.prev_actions,
+            self.actions,
+            self.reset_terminated
         )
 
         return total_reward
@@ -248,7 +259,29 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         return reset_terminated, reset_time_out
     
     def _reset_idx(self, env_ids: Sequence[int] | None):
-        pass
+        if env_ids is None:
+            env_ids = self.rod._ALL_INDICES
+        
+        super()._reset_idx(env_ids)
+        
+        print(f"final state : {self.x[0, :, 0]}\n\n")
+        
+        _reset_x = torch.cat([10. * torch.rand((self.num_envs, 2)).to(self.device) - 5.,
+                              2 * torch.pi * torch.rand((self.num_envs, 1)).to(self.device) - torch.pi,
+                              torch.zeros((self.num_envs, 3)).to(self.device)], dim=-1)
+        
+        self.x[env_ids, :, 0] = _reset_x.clone()
+        
+        self.rod_root_state = torch.cat([self.x[:, 0:2, 0] + self.scene.env_origins[:, 0:2],
+                                     0.5 * torch.ones((self.num_envs, 1)).to(self.device),
+                                     torch.cos(self.x[:, 2:3, 0]/2).to(self.device),
+                                     torch.zeros((self.num_envs, 2)).to(self.device),
+                                     torch.sin(self.x[:, 2:3, 0]/2),
+                                     self.x[:, 3:5, 0],
+                                     torch.zeros((self.num_envs, 3)).to(self.device),
+                                     self.x[:, 5:6, 0]], dim=-1)
+
+        self.rod.write_root_state_to_sim(self.rod_root_state)
 
 @torch.jit.script
 def U(x : torch.Tensor):
@@ -260,25 +293,31 @@ def U(x : torch.Tensor):
 
 @torch.jit.script
 def compute_rewards(
-    rod_pos : torch.Tensor,
-    rod_quat : torch.Tensor,
-    rod_lin_vel_w : torch.Tensor,
-    rod_ang_vel_w : torch.Tensor,
+    x : torch.Tensor,
+    x_dot : torch.Tensor,
+    prev_action : torch.Tensor,
+    action : torch.Tensor,
     reset_terminated : torch.Tensor
 ):
     '''
         Compute reward for each environments
         
         Args:
-            rod_pos(Tensor(num_envs, 3)) : position of the rod in world frame
-            rod_qaut(Tensor(num_envs, 4)) : quaternion of the rod in world frame
-            rod_lin_vel_w(Tensor(num_envs, 3)) : linear velocity of the rod in world frame
-            rod_ang_vel_w(Tensor(num_envs, 3)) : angular velocity of the rod in world frame
+            x(Tensor(num_envs, 6)) : state variable of each environments
+            x_dot(Tensor(num_envs, 6)) : time derivative of state variable
 
         Return:
             total reward(Tensor(num_envs))
     '''
+
+    state_norm = torch.norm(x[:, 0:6], dim=-1)
     
-    total_reward = torch.zeros_like(reset_terminated)
+    state_reward = torch.where(state_norm < 0.61803, 1. - torch.pow(state_norm, 2), 1./(1. + state_norm))
+
+    # total_reward = 1./(1. + 10. * torch.norm(x[:, 0:6], dim=-1))
+    
+    action_reward = torch.where(torch.norm(prev_action - action, dim=-1) > 0.01, torch.zeros_like(state_reward), -torch.ones_like(state_reward))
+
+    total_reward = state_reward + action_reward
 
     return total_reward
