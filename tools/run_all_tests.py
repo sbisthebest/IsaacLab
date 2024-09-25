@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--discover_only", action="store_true", help="Only discover and print tests, don't run them.")
     parser.add_argument("--quiet", action="store_true", help="Don't print to console, only log to file.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Timeout for each test in seconds.")
+    parser.add_argument("--extension", type=str, default=None, help="Run tests only for the given extension.")
     # parse arguments
     args = parser.parse_args()
     return args
@@ -83,6 +84,7 @@ def test_all(
     per_test_timeouts: dict[str, float] = {},
     discover_only: bool = False,
     quiet: bool = False,
+    extension: str | None = None,
 ) -> bool:
     """Run all tests under the given directory.
 
@@ -96,7 +98,8 @@ def test_all(
         discover_only: If True, only discover and print the tests without running them. Defaults to False.
         quiet: If False, print the output of the tests to the terminal console (in addition to the log file).
             Defaults to False.
-
+        extension: Run tests only for the given extension. Defaults to None, which means all extensions'
+            tests will be run.
     Returns:
         True if all un-skipped tests pass or `discover_only` is True. Otherwise, False.
 
@@ -126,6 +129,23 @@ def test_all(
                 break
         else:
             raise ValueError(f"Test to skip '{test_to_skip}' not found in tests.")
+
+    # Filter tests by extension
+    if extension is not None:
+        all_tests_in_selected_extension = []
+
+        for test_path in all_test_paths:
+            # Extract extension name from test path
+            extension_name = test_path[test_path.find("extensions") :].split("/")[1]
+
+            # Skip tests that are not in the selected extension
+            if extension_name != extension:
+                continue
+
+            all_tests_in_selected_extension.append(test_path)
+
+        all_test_paths = all_tests_in_selected_extension
+
     # Remove tests to skip from the list of tests to run
     if len(tests_to_skip) != 0:
         for test_path in all_test_paths:
@@ -287,9 +307,54 @@ def test_all(
     return num_failing + num_timing_out == 0
 
 
+def warm_start_app():
+    """Warm start the app to compile shaders before running the tests."""
+    print("[INFO] Warm starting the simulation app before running tests.")
+    before = time.time()
+    # headless experience
+    warm_start_output = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from omni.isaac.lab.app import AppLauncher; app_launcher = AppLauncher(headless=True);"
+                " app_launcher.app.close()"
+            ),
+        ],
+        capture_output=True,
+    )
+    if len(warm_start_output.stderr) > 0:
+        logging.error(f"Error warm starting the app: {str(warm_start_output.stderr)}")
+        exit(1)
+
+    # headless experience with rendering
+    warm_start_rendering_output = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from omni.isaac.lab.app import AppLauncher; app_launcher = AppLauncher(headless=True,"
+                " enable_cameras=True); app_launcher.app.close()"
+            ),
+        ],
+        capture_output=True,
+    )
+    if len(warm_start_rendering_output.stderr) > 0:
+        logging.error(f"Error warm starting the app with rendering: {str(warm_start_rendering_output.stderr)}")
+        exit(1)
+
+    after = time.time()
+    time_elapsed = after - before
+    print(f"[INFO] Warm start completed successfully in {time_elapsed:.2f} s")
+
+
 if __name__ == "__main__":
     # parse command line arguments
     args = parse_args()
+
+    # warm start the app
+    warm_start_app()
+
     # add tests to skip to the list of tests to skip
     tests_to_skip = TESTS_TO_SKIP
     tests_to_skip += args.skip_tests
@@ -303,6 +368,7 @@ if __name__ == "__main__":
         per_test_timeouts=PER_TEST_TIMEOUTS,
         discover_only=args.discover_only,
         quiet=args.quiet,
+        extension=args.extension,
     )
     # update exit status based on all tests passing or not
     if not test_success:
