@@ -24,25 +24,32 @@ Guidelines for modifications:
 * Hunter Hansen
 * James Smith
 * James Tigue
-* Kelly Guo
+* Kelly (Yunrong) Guo
 * Mayank Mittal
 * Nikita Rudin
 * Pascal Roth
 
 ## Contributors
 
-* Anton Bjørndahl Mortensen
 * Alice Zhou
+* Amr Mousa
 * Andrej Orsula
+* Anton Bjørndahl Mortensen
 * Antonio Serrano-Muñoz
 * Arjun Bhardwaj
 * Brayden Zhang
 * Calvin Yu
 * Chenyu Yang
+* David Yang
+* HoJin Jeon
+* Jean Tampon
 * Jia Lin Yuan
 * Jingzhou Liu
+* Johnson Sun
 * Kourosh Darvish
 * Lorenz Wellhausen
+* Masoud Moghani
+* Michael Gussert
 * Muhong Guo
 * Nuralem Abizov
 * Özhan Özen
@@ -52,8 +59,11 @@ Guidelines for modifications:
 * Rosario Scalise
 * Shafeef Omar
 * Vladimir Fokow
+* Xavier Nal
+* Yang Jin
 * Zhengyu Zhang
 * Ziqi Fan
+* Qian Wan
 
 ## Acknowledgements
 
@@ -63,4 +73,3 @@ Guidelines for modifications:
 * Gavriel State
 * Hammad Mazhar
 * Marco Hutter
-* Yunrong Guo

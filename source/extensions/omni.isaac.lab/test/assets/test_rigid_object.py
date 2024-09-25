@@ -108,6 +108,8 @@ class TestRigidObject(unittest.TestCase):
                         # Check buffers that exists and have correct shapes
                         self.assertEqual(cube_object.data.root_pos_w.shape, (num_cubes, 3))
                         self.assertEqual(cube_object.data.root_quat_w.shape, (num_cubes, 4))
+                        self.assertEqual(cube_object.data.default_mass.shape, (num_cubes, 1))
+                        self.assertEqual(cube_object.data.default_inertia.shape, (num_cubes, 9))
 
                         # Simulate physics
                         for _ in range(2):
@@ -602,6 +604,7 @@ class TestRigidObject(unittest.TestCase):
                     with build_simulation_context(
                         device=device, gravity_enabled=False, add_ground_plane=True, auto_add_lighting=True
                     ) as sim:
+                        # Create a scene with random cubes
                         cube_object, _ = generate_cubes_scene(num_cubes=num_cubes, height=1.0, device=device)
 
                         # Play sim
@@ -640,6 +643,7 @@ class TestRigidObject(unittest.TestCase):
                 for gravity_enabled in [True, False]:
                     with self.subTest(num_cubes=num_cubes, device=device, gravity_enabled=gravity_enabled):
                         with build_simulation_context(device=device, gravity_enabled=gravity_enabled) as sim:
+                            # Create a scene with random cubes
                             cube_object, _ = generate_cubes_scene(num_cubes=num_cubes, device=device)
 
                             # Obtain gravity direction
@@ -662,6 +666,13 @@ class TestRigidObject(unittest.TestCase):
                                 sim.step()
                                 # update object
                                 cube_object.update(sim.cfg.dt)
+
+                                # Expected gravity value is the acceleration of the body
+                                gravity = torch.zeros(num_cubes, 1, 6, device=device)
+                                if gravity_enabled:
+                                    gravity[:, :, 2] = -9.81
+                                # Check the body accelerations are correct
+                                torch.testing.assert_close(cube_object.data.body_acc_w, gravity)
 
 
 if __name__ == "__main__":
