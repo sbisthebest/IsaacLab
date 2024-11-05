@@ -24,13 +24,11 @@ class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1.0/120.0,
         render_interval=2,
-        use_gpu_pipeline=True,
         gravity=(0.0, 0.0, -9.81),
         use_fabric=True, # False to update physics parameters in real-time
 
         physx = PhysxCfg(
             solver_type=1,
-            use_gpu=True,
             enable_stabilization=True
             )
         )
@@ -195,23 +193,26 @@ class CollaborativeManipulationEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         
         self._u = self.actions.reshape(self.num_envs, self.num_actions, 1)
-
-        self.f = torch.cat([U(self.x[:, 3:4, 0]),
-                            U(self.x[:, 4:5, 0]),
-                            U(self.x[:, 5:6, 0]),
-                            self.x[:, 3:4, 0] * self.x[:, 5:6, 0],
-                            self.x[:, 4:5, 0] * self.x[:, 5:6, 0]
-                            ], dim=-1).unsqueeze(-1)
+        
+        self.f = calc_f(self.x)
 
         # Calculate state-space equation
-        self.x_dot = self.A @ self.x + self.T @ self.f + self.B @ self._u
+        Ax = self.A @ self.x
+        Bu = self.B @ self._u
+        
+        k_1 = Ax + Bu + self.T @ self.f
+        k_2 = Ax + self.physics_dt/2 * self.A @ k_1 + Bu + self.T @ calc_f(self.x + self.physics_dt/2 * k_1)
+        k_3 = Ax + self.physics_dt/2 * self.A @ k_2 + Bu + self.T @ calc_f(self.x + self.physics_dt/2 * k_2)
+        k_4 = Ax + self.physics_dt * self.A @ k_3 + Bu + self.T @ calc_f(self.x + self.physics_dt * k_3)
+        
+        self.x_dot = Ax + Bu + self.T @ self.f
 
         # Update state variable
-        self.x += self.x_dot * self.physics_dt
+        self.x += self.physics_dt/6 * (k_1 + 2*k_2 + 2*k_3 + k_4)
         
         # Clip theta(-pi ~ pi)
-        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] >= torch.pi, self.x[:, 2, 0] - torch.pi, self.x[:, 2, 0])
-        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] < -torch.pi, self.x[:, 2, 0] + torch.pi, self.x[:, 2, 0])
+        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] >= torch.pi, self.x[:, 2, 0] - 2 * torch.pi, self.x[:, 2, 0])
+        self.x[:, 2, 0] = torch.where(self.x[:, 2, 0] < -torch.pi, self.x[:, 2, 0] + 2 * torch.pi, self.x[:, 2, 0])
 
         self.rod_root_state = torch.cat([self.x[:, 0:2, 0] + self.scene.env_origins[:, 0:2],
                                      0.5 * torch.ones((self.num_envs, 1)).to(self.device),
@@ -264,8 +265,6 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         
         super()._reset_idx(env_ids)
         
-        print(f"final state : {self.x[0, :, 0]}\n\n")
-        
         _reset_x = torch.cat([10. * torch.rand((self.num_envs, 2)).to(self.device) - 5.,
                               2 * torch.pi * torch.rand((self.num_envs, 1)).to(self.device) - torch.pi,
                               torch.zeros((self.num_envs, 3)).to(self.device)], dim=-1)
@@ -282,6 +281,23 @@ class CollaborativeManipulationEnv(DirectRLEnv):
                                      self.x[:, 5:6, 0]], dim=-1)
 
         self.rod.write_root_state_to_sim(self.rod_root_state)
+        
+@torch.jit.script
+def calc_f(x: torch.Tensor):
+    '''
+        Calculate current nonlienar function of the systems
+        
+        Args:
+            x(Tensor(num_envs, num_state, 1)) : current state of the system
+    '''
+    
+    f = torch.stack([torch.where(x[:, 3:4, 0] >= 0, torch.ones_like(x[:, 3:4, 0]), -torch.ones_like(x[:, 3:4, 0])),
+                     torch.where(x[:, 4:5, 0] >= 0, torch.ones_like(x[:, 4:5, 0]), -torch.ones_like(x[:, 4:5, 0])),
+                     torch.where(x[:, 5:6, 0] >= 0, torch.ones_like(x[:, 5:6, 0]), -torch.ones_like(x[:, 5:6, 0])),
+                     x[:, 3:4, 0] * x[:, 5:6, 0],
+                     x[:, 4:5, 0] * x[:, 5:6, 0]], dim=1)
+
+    return f
 
 @torch.jit.script
 def U(x : torch.Tensor):
@@ -309,15 +325,17 @@ def compute_rewards(
         Return:
             total reward(Tensor(num_envs))
     '''
-
+    
+    error_norm = torch.norm(x[:, 0:3], dim=-1)
     state_norm = torch.norm(x[:, 0:6], dim=-1)
     
     state_reward = torch.where(state_norm < 0.61803, 1. - torch.pow(state_norm, 2), 1./(1. + state_norm))
-
-    # total_reward = 1./(1. + 10. * torch.norm(x[:, 0:6], dim=-1))
+    # bonus_reward = torch.where(error_norm < 0.01, 0.1 * torch.ones_like(state_reward), torch.zeros_like(state_reward))
     
-    action_reward = torch.where(torch.norm(prev_action - action, dim=-1) > 0.01, torch.zeros_like(state_reward), -torch.ones_like(state_reward))
+    # max_action_change = torch.max(torch.abs(prev_action - action), dim=-1)[0]
 
-    total_reward = state_reward + action_reward
+    # action_reward = torch.where(max_action_change < 0.1, torch.zeros_like(state_reward), -0.1 * torch.ones_like(state_reward))
 
+    total_reward = state_reward
+    
     return total_reward
