@@ -18,7 +18,7 @@ from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 
 @configclass
-class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
+class CollaborativeManipulationEnvCfg(DirectRLEnvCfg):
 
     # simulation config
     sim: SimulationCfg = SimulationCfg(
@@ -80,21 +80,17 @@ class CollaborativeManipultionEnvCfg(DirectRLEnvCfg):
     )
 
     # task config
-    '''
-        Actions : (# of agents) * (x-y force + torque)\
-
-        Observation : x-y coordinate + phi + linear velocity + angular velocity
-    '''
     decimation = 2
     episode_length_s = 10.0
     num_agents = 6
-    num_actions = 3 * num_agents
-    num_observations = 36
+    action_space = 3 * num_agents
+    observation_space = 36
+    state_space = 0
 
 class CollaborativeManipulationEnv(DirectRLEnv):
-    cfg: CollaborativeManipultionEnvCfg
+    cfg: CollaborativeManipulationEnvCfg
 
-    def __init__(self, cfg: CollaborativeManipultionEnvCfg, render_mode: None | str = None, **kwargs):
+    def __init__(self, cfg: CollaborativeManipulationEnvCfg, render_mode: None | str = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.rod_pos = self.rod.data.root_pos_w
@@ -138,6 +134,7 @@ class CollaborativeManipulationEnv(DirectRLEnv):
         self.r_obs = torch.Tensor([1, 1, 1, -1, -1, 1, -1, -1, 0, 1, 1, 0]).repeat(self.num_envs, 1).to(self.device)
         
         self.robot_num = self.cfg.num_agents
+        self.num_actions = 3 * self.robot_num
 
         self.A = torch.Tensor([[0, 0, 0, 1, 0, 0],
                                [0, 0, 0, 0, 1, 0],
