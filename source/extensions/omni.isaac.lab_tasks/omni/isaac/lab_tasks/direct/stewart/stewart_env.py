@@ -19,7 +19,7 @@ class StewartManipulationEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.
     decimation = 2
     action_space = 3
-    observation_space = 18
+    observation_space = 13
     state_space = 0
 
     # simulation config
@@ -154,6 +154,10 @@ class StewartManipulationEnv(DirectRLEnv):
         self.rel_vel = torch.zeros((self.num_envs, 2)).to(self.sim.device)
         self.ball_to_targets = torch.zeros((self.num_envs, 2)).to(self.sim.device)
         self.robot_dof_targets = torch.zeros((self.num_envs, 3)).to(self.sim.device)
+        self.gravity_projected = torch.zeros((self.num_envs, 2)).to(self.sim.device)
+
+        self.physics_obs = torch.Tensor(self.ball.data.default_mass
+                                        ).repeat(self.num_envs, 1).to(self.sim.device)
 
         self.succeed_env_ids = torch.zeros((self.num_envs), dtype=torch.bool).to(self.sim.device)
         self.terminated_env_ids = torch.zeros((self.num_envs), dtype=torch.bool).to(self.sim.device)
@@ -189,26 +193,7 @@ class StewartManipulationEnv(DirectRLEnv):
         # breakpoint()
         self.robot.set_joint_position_target(self.robot_dof_targets, joint_ids=[9, 10, 11])
 
-    def _get_observations(self):
-        self.plane_rot_mat = matrix_from_quat(self.plane_quaternion).reshape(-1, 9)
-
-        obs = torch.cat(
-            (
-                self.ball_to_targets,
-                # self.rel_pos,
-                self.rel_vel,
-                self.ball_targets,
-                self.robot_dof_targets,
-                self.plane_rot_mat
-            ),
-            dim=-1,
-        )
-
-        observations = {"policy" : obs}
-
-        return observations
-
-    def _get_rewards(self) -> torch.Tensor:
+    def _compute_intermediate_values(self):
 
         self.ball_position = self.ball.data.body_pos_w[:, 0, :] - self.env_origins
         self.ball_velocity = self.ball.data.body_lin_vel_w[:, 0, :]
@@ -219,6 +204,7 @@ class StewartManipulationEnv(DirectRLEnv):
             self.ball_to_targets[:],
             self.rel_pos[:],
             self.rel_vel[:],
+            self.gravity_projected[:],
             self.succeed_env_ids[:],
             self.terminated_env_ids[:],
         )=compute_intermediate_values(
@@ -227,16 +213,32 @@ class StewartManipulationEnv(DirectRLEnv):
             self.ball_velocity,
             self.plane_position,
             self.plane_quaternion,
-            self.robot_dof_targets,
             self.cfg.plane_length,
-            self.cfg.lower_leg_lenth,
         )
 
-        # self.success_env_count += torch.sum(self.succeed_env_ids)
-        # self.failed_env_count += torch.sum(self.terminated_env_ids)
+    def _get_observations(self):
 
-        # if torch.sum(self.succeed_env_ids) > 0:
-        #     print(f"success ratio : {self.success_env_count / (self.success_env_count + self.failed_env_count) * 100}%")
+        obs = torch.cat(
+            (
+                self.ball_to_targets,
+                self.rel_pos,
+                self.rel_vel,
+                self.ball_targets,
+                self.robot_dof_targets,
+                self.gravity_projected,
+            ),
+            dim=-1,
+        )
+
+        observations = {"policy" : obs}
+
+        return observations
+
+    def _get_rewards(self) -> torch.Tensor:
+
+        self._compute_intermediate_values()
+
+        print(self.ball_to_targets)
 
         total_reward = compute_rewards(self.ball_to_targets,
                                        self.rel_vel,
@@ -293,6 +295,8 @@ class StewartManipulationEnv(DirectRLEnv):
         self.ball.write_root_pose_to_sim(init_ball_pos, env_ids=env_ids)
         self.ball.write_root_velocity_to_sim(init_ball_vel, env_ids=env_ids)
 
+        self._compute_intermediate_values()
+
     def _reset_stewart(self, env_ids):
         upper_joint = torch.rand((len(env_ids), 1)).to(self.sim.device)
         inter_joint = torch.zeros((len(env_ids), 1)).to(self.sim.device)
@@ -335,9 +339,7 @@ def compute_intermediate_values(
     ball_vel : torch.Tensor,
     plane_pos : torch.Tensor,
     plane_quat : torch.Tensor,
-    joint_angle : torch.Tensor,
     plane_length : float,
-    lower_leg_length : float,
 ):
     _z_axis = torch.zeros_like(plane_pos)
     _z_axis[..., 2] = 1
@@ -346,18 +348,26 @@ def compute_intermediate_values(
 
     # Calculate relative position
     plane_to_ball = ball_pos - plane_pos
-    ball_projected = plane_to_ball - torch.diag(torch.inner(plane_to_ball, plane_norm_vector)).reshape(-1, 1) * plane_to_ball / torch.norm(plane_to_ball, dim=-1, keepdim=True)
+    ball_projected = plane_to_ball - torch.diag(torch.inner(plane_to_ball, plane_norm_vector)).reshape(-1, 1) * plane_to_ball / (torch.norm(plane_to_ball, dim=-1, keepdim=True) + 1e-8)
     _rel_pos = quat_apply(quat_inv(plane_quat), ball_projected)
     rel_pos = _rel_pos[..., 0:2]
     ball_to_targets = ball_targets - rel_pos
 
     # Calculate relative velocity
-    ball_vel_projected = ball_vel - torch.diag(torch.inner(ball_vel, plane_norm_vector)).reshape(-1, 1) * ball_vel / torch.norm(ball_vel, dim=-1, keepdim=True)
+    ball_vel_projected = ball_vel - torch.diag(torch.inner(ball_vel, plane_norm_vector)).reshape(-1, 1) * ball_vel / (torch.norm(ball_vel, dim=-1, keepdim=True) + 1e-8)
     _rel_vel = quat_apply(quat_inv(plane_quat), ball_vel_projected)
     rel_vel = _rel_vel[..., 0:2]
 
+    # Calculate projected gravity vector
+    _gravity = torch.zeros_like(plane_pos)
+    _gravity[..., 2] = -9.8
+    rel_gravity = quat_apply(quat_inv(plane_quat), _gravity) # gravity vector in plane frame
+    gravity_projected = rel_gravity - torch.diag(torch.inner(rel_gravity, _z_axis)).reshape(-1, 1) * rel_gravity / (torch.norm(rel_gravity, dim=-1, keepdim=True) + 1e-8)
+    gravity_projected = gravity_projected[:, 0:2]
+
     # Calculate succeed enviornments
-    succeed_env_ids = (torch.norm(ball_to_targets, dim=-1) < 2e-2) & (torch.norm(rel_vel, dim=-1) < 1e-3)
+    succeed_env_ids = (torch.norm(ball_to_targets, dim=-1) < 1.5e-2)
+    # succeed_env_ids = (torch.norm(ball_to_targets, dim=-1) < 1e-2) & (torch.norm(rel_vel, dim=-1) < 1e-3)
 
     # Calculate terminated environments
     terminated_env_ids = torch.max(torch.abs(rel_pos), dim=-1)[0] >= plane_length/2
@@ -366,6 +376,7 @@ def compute_intermediate_values(
         ball_to_targets,
         rel_pos,
         rel_vel,
+        gravity_projected,
         succeed_env_ids,
         terminated_env_ids,
     )
@@ -380,16 +391,20 @@ def compute_rewards(
     max_episode_length : float,
 ):
 
-    pos_reward = 1./(1. + 10 * torch.norm(ball_to_targets, dim=-1))
-    vel_reward = 1./(1. + 1 * torch.norm(rel_vel, dim=-1))
+    # pos_reward = 1./(1. + 10 * torch.norm(ball_to_targets, dim=-1))
+    pos_reward = 1. - 10 * torch.norm(ball_to_targets, dim=-1)
+    # pos_reward = torch.where(pos_reward < 0, torch.zeros_like(pos_reward), pos_reward)
+    # vel_reward = 1./(1. + 1 * torch.norm(rel_vel, dim=-1))
+    vel_reward = 1. - torch.norm(rel_vel, dim=-1)
 
     # alive_reward = torch.ones_like(pos_reward)
 
-    total_reward = pos_reward * vel_reward
+    total_reward = pos_reward + 0.005 * vel_reward
+
+    total_reward = torch.where(episode_length_buf >= max_episode_length - 11, -50 * torch.ones_like(total_reward), total_reward)
 
     total_reward = torch.where(succeed_env_ids, 10 * torch.ones_like(pos_reward), total_reward)
 
     total_reward = torch.where(terminated_env_ids, -100 * torch.ones_like(total_reward), total_reward)
-    # total_reward = torch.where(episode_length_buf >= max_episode_length - 1, -1 * torch.ones_like(total_reward), total_reward)
 
     return total_reward
