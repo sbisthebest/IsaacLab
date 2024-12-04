@@ -238,7 +238,7 @@ class StewartManipulationEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
 
-        print(self.ball_to_targets)
+        # print(self.ball_to_targets)
 
         total_reward = compute_rewards(self.ball_to_targets,
                                        self.rel_vel,
@@ -298,7 +298,7 @@ class StewartManipulationEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
     def _reset_stewart(self, env_ids):
-        upper_joint = torch.rand((len(env_ids), 1)).to(self.sim.device)
+        upper_joint = 1e-4 * torch.randint(0, 10000, (len(env_ids), 1)).to(self.sim.device)
         inter_joint = torch.zeros((len(env_ids), 1)).to(self.sim.device)
         lower_joint = 2*upper_joint
         foot_joint = upper_joint
@@ -318,7 +318,7 @@ class StewartManipulationEnv(DirectRLEnv):
                                          torch.ones(len(env_ids), 1, device=self.sim.device),
                                          torch.zeros(len(env_ids), 3, device=self.sim.device)))
 
-        if torch.rand(1) > 0.:
+        if False:
             init_ball_pos = torch.hstack((1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length,
                                         plane_height + self.cfg.plane_height/2,
                                         torch.ones(len(env_ids), 1, device=self.sim.device),
@@ -335,7 +335,7 @@ class StewartManipulationEnv(DirectRLEnv):
 
     def _reset_target(self, env_ids):
 
-        if torch.randn(1) > 0.:
+        if False:
             new_target = 0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2)).to(self.sim.device) - 0.4 * self.cfg.plane_length
         else:
             new_target = 1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length
