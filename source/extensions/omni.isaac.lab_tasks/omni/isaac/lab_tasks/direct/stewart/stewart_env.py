@@ -276,7 +276,7 @@ class StewartManipulationEnv(DirectRLEnv):
         init_mask = torch.norm(init_ball_pos[:, 0:2] - self.ball_targets[env_ids, :], dim=-1, keepdim=True) < 2e-2
 
         self.ball_targets[env_ids, :] = torch.where(init_mask, torch.zeros_like(self.ball_targets[env_ids, :]), self.ball_targets[env_ids, :])
-        init_ball_pos[:, 0:2] = torch.where(init_mask, 0.4 * self.cfg.plane_length * torch.ones_like(init_ball_pos[:, 0:2]), init_ball_pos[:, 0:2])
+        init_ball_pos[:, 0:2] = torch.where(init_mask, 0.3 * self.cfg.plane_length * torch.ones_like(init_ball_pos[:, 0:2]), init_ball_pos[:, 0:2])
 
         init_stewart_vel = torch.zeros((len(env_ids), 6), device=self.sim.device)
         init_joint_vel = torch.zeros_like(init_joint_pos)
@@ -318,17 +318,27 @@ class StewartManipulationEnv(DirectRLEnv):
                                          torch.ones(len(env_ids), 1, device=self.sim.device),
                                          torch.zeros(len(env_ids), 3, device=self.sim.device)))
 
-        init_ball_pos = torch.hstack((0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length,
-                                      plane_height + self.cfg.plane_height/2,
-                                      torch.ones(len(env_ids), 1, device=self.sim.device),
-                                      torch.zeros(len(env_ids), 3, device=self.sim.device)))
+        if torch.rand(1) > 0.:
+            init_ball_pos = torch.hstack((1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length,
+                                        plane_height + self.cfg.plane_height/2,
+                                        torch.ones(len(env_ids), 1, device=self.sim.device),
+                                        torch.zeros(len(env_ids), 3, device=self.sim.device)))
+
+        else:
+            init_ball_pos = torch.hstack((0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length,
+                                          plane_height + self.cfg.plane_height/2,
+                                          torch.ones(len(env_ids), 1, device=self.sim.device),
+                                          torch.zeros(len(env_ids), 3, device=self.sim.device)))
+
 
         return init_joint_pos, init_stewart_pos, init_ball_pos
 
     def _reset_target(self, env_ids):
 
-        new_target = 0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2)).to(self.sim.device) - 0.4 * self.cfg.plane_length
-        # new_target = torch.zeros((len(env_ids), 2)).to(self.sim.device)
+        if torch.randn(1) > 0.:
+            new_target = 0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2)).to(self.sim.device) - 0.4 * self.cfg.plane_length
+        else:
+            new_target = 1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length
 
         return new_target
 
@@ -399,12 +409,12 @@ def compute_rewards(
 
     # alive_reward = torch.ones_like(pos_reward)
 
-    total_reward = pos_reward + 0.005 * vel_reward
+    total_reward = 0.1 * pos_reward + 0.005 * vel_reward
 
-    total_reward = torch.where(episode_length_buf >= max_episode_length - 11, -50 * torch.ones_like(total_reward), total_reward)
+    total_reward = torch.where(episode_length_buf >= max_episode_length - 11, -1 * torch.ones_like(total_reward), total_reward)
 
-    total_reward = torch.where(succeed_env_ids, 10 * torch.ones_like(pos_reward), total_reward)
+    total_reward = torch.where(succeed_env_ids, 5 * torch.ones_like(pos_reward), total_reward)
 
-    total_reward = torch.where(terminated_env_ids, -100 * torch.ones_like(total_reward), total_reward)
+    total_reward = torch.where(terminated_env_ids, -10 * torch.ones_like(total_reward), total_reward)
 
     return total_reward
