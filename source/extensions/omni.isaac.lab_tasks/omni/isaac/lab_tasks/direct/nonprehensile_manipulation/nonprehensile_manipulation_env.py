@@ -126,14 +126,14 @@ class NonPrehensileManipulationEnvCfg(DirectRLEnvCfg):
         env_spacing=4.0
     )
 
-    
+
 
 class NonPrehensileManipulationEnv(DirectRLEnv):
     cfg : NonPrehensileManipulationEnvCfg
 
     def __init__(self, cfg : NonPrehensileManipulationEnvCfg, render_mode : None | str = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        
+
         self.action_bins = self.cfg.action_bins
         self.env_origins = self.scene.env_origins
         self.action_scale = self.cfg.action_scale
@@ -177,6 +177,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
+        # breakpoint()
         self.actions = (2 * self.actions / (self.action_bins - 1)) - 1
         self.forces = torch.hstack((self.action_scale * self.actions, torch.zeros((self.num_envs, 1)).to(self.device))).reshape(self.num_envs, 1, 3)
         self.torques = torch.zeros_like(self.forces)
@@ -185,7 +186,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         self.robot.set_external_force_and_torque(forces=self.forces,
                                                  torques=self.torques,)
         self.robot.write_data_to_sim()
-        
+
     def _compute_intermediate_values(self):
 
         self.box_pos = self.box.data.root_pos_w - self.env_origins
@@ -194,7 +195,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         self.box_quat = self.box.data.root_quat_w
         self.box_lin_acc_w = self.box.data.body_lin_acc_w
         self.box_ang_acc_w = self.box.data.body_ang_acc_w
-        
+
         self.robot_pos = self.robot.data.root_pos_w - self.env_origins
         self.robot_lin_vel_w = self.robot.data.root_lin_vel_w
         self.robot_ang_vel_w = self.robot.data.root_ang_vel_w
@@ -206,7 +207,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         self.prev_dist_robot_to_box[:] = self.dist_robot_to_box
         self.prev_box_2d_lin_acc[:] = self.box_2d_lin_acc
         self.prev_robot_2d_lin_acc[:] = self.robot_2d_lin_acc
-
+    
         (
             self.box_ori,
             self.box_2d_pos,
@@ -240,7 +241,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         )
         
     def _get_observations(self) -> dict:
-        
+
         obs = torch.cat(
             (
                 # self.normvec_box_to_target,
@@ -269,7 +270,7 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         observations = {"policy": obs}
 
         return observations
-    
+
     def _get_rewards(self) -> torch.Tensor:
 
         total_reward = compute_rewards(self.dist_box_to_target,
@@ -296,11 +297,11 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
                      (torch.max(torch.abs(self.robot_pos[:, 0:2])) > self.cfg.scene.env_spacing / 2)
 
         return terminated, time_out
-    
+
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
-            env_ids = self.box._ALL_INDICES 
-        
+            env_ids = self.box._ALL_INDICES
+
         self.robot.reset(env_ids)
         self.box.reset(env_ids)
         super()._reset_idx(env_ids)
@@ -308,11 +309,11 @@ class NonPrehensileManipulationEnv(DirectRLEnv):
         self.targets = torch.hstack((self.cfg.scene.env_spacing/2 * torch.rand((self.num_envs, 2)) - self.cfg.scene.env_spacing/4,
                                      2 * torch.pi * torch.rand((self.num_envs, 1)) - torch.pi)).to(self.device)
 
-        self._box_pos = torch.hstack((self.cfg.scene.env_spacing/2*torch.rand((self.num_envs, 2)) - self.cfg.scene.env_spacing/4, 
+        self._box_pos = torch.hstack((self.cfg.scene.env_spacing/2*torch.rand((self.num_envs, 2)) - self.cfg.scene.env_spacing/4,
                                       self.cfg.box_height/2*torch.ones((self.num_envs, 1))))
         self._robot_pos = torch.hstack((self.cfg.scene.env_spacing/2*torch.rand((self.num_envs, 2)) - self.cfg.scene.env_spacing/4,
                                         self.cfg.robot_height/2*torch.ones((self.num_envs, 1))))
-        
+
         self._box_ori = 2 * torch.pi * torch.rand((self.num_envs, 1)) - torch.pi
         self._box_quat = torch.hstack((torch.cos(self._box_ori/2),
                                        torch.zeros((self.num_envs, 2)),
@@ -360,22 +361,22 @@ def compute_rewards(
     max_episode_length : float,
     num_envs : int,
     device : str,
-):  
+):
     dist_box_to_target = dist_box_to_target.squeeze()
     ang_box_to_target = ang_box_to_target.squeeze()
     robot_speed = robot_speed.squeeze()
-    
+
     dist_error_reward = 1 - dist_box_to_target / boundary
     ang_error_reward = 1 - ang_box_to_target / torch.pi
     vel_penalty = torch.where(robot_speed > 0.1, 0.01-robot_speed**2, torch.zeros_like(robot_speed))
     vel_penalty = torch.where(vel_penalty < -1., -torch.ones_like(vel_penalty), vel_penalty)
 
-    total_reward = 0.1 * dist_error_reward + 0.1 * ang_error_reward + 0.1 * vel_penalty
+    total_reward = 0.1 * dist_error_reward + 0.04 * ang_error_reward + 0.001 * vel_penalty
 
     total_reward = torch.where(dist_box_to_target < 1e-2, 100 * torch.ones_like(total_reward), total_reward)
     total_reward = torch.where(torch.max(torch.abs(robot_2d_pos)) > boundary, -50 * torch.ones_like(total_reward), total_reward)
     total_reward = torch.where(episode_length_buf >= max_episode_length-1, -50*torch.ones_like(total_reward), total_reward)
-    
+
     # if torch.any(dist_box_to_target < 1e-2):
     #     print("Success Episode!")
 
@@ -400,7 +401,7 @@ def compute_intermediate_values(
     # prev_robot_2d_lin_acc : torch.Tensor,
     targets : torch.Tensor,
     # dt : float,
-):  
+):
     # Split target into pos and angle
     targets_pos = targets[:, 0:2]
     targets_theta = targets[:, 2:3]
@@ -420,7 +421,7 @@ def compute_intermediate_values(
     # Calculate box & robot angle respect to the world frame
     box_theta = 2*torch.atan2(box_quat[:, 3:4], box_quat[:, 0:1])
     robot_theta = 2*torch.atan2(robot_quat[:, 3:4], robot_quat[:, 0:1])
-    
+
     # Calcualte box & robot orientation information
     box_ori = torch.hstack((torch.cos(box_theta),
                             torch.sin(box_theta)))
