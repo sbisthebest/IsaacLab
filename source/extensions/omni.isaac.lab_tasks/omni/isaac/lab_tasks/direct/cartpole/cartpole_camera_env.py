@@ -47,7 +47,7 @@ class CartpoleRGBCameraEnvCfg(DirectRLEnvCfg):
         width=80,
         height=80,
     )
-    write_image_to_file = False
+    write_image_to_file = True
 
     # spaces
     action_space = 1
@@ -151,7 +151,10 @@ class CartpoleCameraEnv(DirectRLEnv):
         observations = {"policy": camera_data.clone()}
 
         if self.cfg.write_image_to_file:
-            save_images_to_file(observations["policy"], f"cartpole_{data_type}.png")
+            normalized_camera_data = self._tiled_camera.data.output["rgb"] - 0.5
+            normalized_camera_data = normalized_camera_data / 255.0
+            save_images_to_file(normalized_camera_data[0:1], f"cartpole_RGB.png")
+            # save_images_to_file(observations["policy"], f"cartpole_{data_type}.png")
 
         return observations
 

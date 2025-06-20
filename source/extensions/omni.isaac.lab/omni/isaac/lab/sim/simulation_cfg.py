@@ -113,7 +113,7 @@ class PhysxCfg:
     gpu_max_rigid_patch_count: int = 5 * 2**15
     """Size of the rigid contact patch stream buffer allocated in pinned host memory. Default is 5 * 2 ** 15."""
 
-    gpu_found_lost_pairs_capacity: int = 2**21
+    gpu_found_lost_pairs_capacity: int = 2**23
     """Capacity of found and lost buffers allocated in GPU global memory. Default is 2 ** 21.
 
     This is used for the found/lost pair reports in the BP.
@@ -126,7 +126,7 @@ class PhysxCfg:
     This is used for the found/lost pair reports in AABB manager.
     """
 
-    gpu_total_aggregate_pairs_capacity: int = 2**21
+    gpu_total_aggregate_pairs_capacity: int = 2**23
     """Capacity of total number of aggregate pairs allocated in GPU global memory. Default is 2 ** 21."""
 
     gpu_collision_stack_size: int = 2**26

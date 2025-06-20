@@ -12,6 +12,21 @@ from omni.isaac.lab_assets import ISAACLAB_ASSETS_DATA_DIR
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.math import quat_apply, quat_inv, matrix_from_quat
+from omni.isaac.lab.utils.noise import NoiseModelWithAdditiveBiasCfg, GaussianNoiseCfg
+from omni.isaac.lab.managers import EventTermCfg
+from omni.isaac.lab.envs.mdp.events import randomize_physics_scene_gravity
+
+@configclass
+class EventCfg:
+    reset_gravity=EventTermCfg(
+        func=randomize_physics_scene_gravity,
+        mode="interval",
+        params={
+            "gravity_distribution_params": ([0., 0., -0.4], [0., 0., 0.4]),
+            "operation": "add",
+            "distribution": "gaussian",
+        }
+    )
 
 @configclass
 class StewartManipulationEnvCfg(DirectRLEnvCfg):
@@ -19,14 +34,14 @@ class StewartManipulationEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10.
     decimation = 2
     action_space = 3
-    observation_space = 13
+    observation_space = 11
     state_space = 0
 
     # simulation config
     sim = SimulationCfg(
         dt = 1.0/120.0,
         render_interval = decimation,
-        gravity = (0.0, 0.0, -9.81),
+        gravity = (0.0, 0.0, -9.8),
         use_fabric = True,
         disable_contact_processing = False,
 
@@ -131,13 +146,24 @@ class StewartManipulationEnvCfg(DirectRLEnvCfg):
 
     # robot spec
     plane_length = 0.18
-    plane_height = 0.02
-    upper_leg_length = 0.1
-    lower_leg_lenth = 0.1
-    foot_height = 0.005
+    plane_height = 0.0215
+    upper_leg_length = 0.0627
+    lower_leg_length = 0.0496
+    foot_height = 0.055
 
 class StewartManipulationEnv(DirectRLEnv):
     cfg : StewartManipulationEnvCfg
+    events : EventCfg
+
+    action_noise_model : NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
+        noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.1, operation="add"),
+        bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std = 0.05, operation="abs"),
+    )
+
+    observation_noise_model: NoiseModelWithAdditiveBiasCfg = NoiseModelWithAdditiveBiasCfg(
+        noise_cfg=GaussianNoiseCfg(mean=0.0, std = 0.1, operation="add"),
+        bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.001, operation="abs"),
+    )
 
     def __init__(self, cfg : StewartManipulationEnvCfg, render_mode : str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -158,6 +184,9 @@ class StewartManipulationEnv(DirectRLEnv):
 
         self.physics_obs = torch.Tensor(self.ball.data.default_mass
                                         ).repeat(self.num_envs, 1).to(self.sim.device)
+        self.robot_geometry = torch.Tensor([self.cfg.upper_leg_length,
+                                            self.cfg.lower_leg_length]
+                                           ).repeat(self.num_envs, 1).to(self.sim.device)
 
         self.succeed_env_ids = torch.zeros((self.num_envs), dtype=torch.bool).to(self.sim.device)
         self.terminated_env_ids = torch.zeros((self.num_envs), dtype=torch.bool).to(self.sim.device)
@@ -220,12 +249,13 @@ class StewartManipulationEnv(DirectRLEnv):
 
         obs = torch.cat(
             (
-                self.ball_to_targets,
+                # self.ball_to_targets,
                 self.rel_pos,
                 self.rel_vel,
-                self.ball_targets,
+                # self.ball_targets,
                 self.robot_dof_targets,
                 self.gravity_projected,
+                self.robot_geometry,
             ),
             dim=-1,
         )
@@ -299,9 +329,11 @@ class StewartManipulationEnv(DirectRLEnv):
 
     def _reset_stewart(self, env_ids):
         upper_joint = 1e-4 * torch.randint(0, 10000, (len(env_ids), 1)).to(self.sim.device)
+        upper_joint = torch.where(upper_joint >= self.cfg.lower_leg_length / self.cfg.upper_leg_length,  # Invalid Angle
+                                  upper_joint/3, upper_joint)
         inter_joint = torch.zeros((len(env_ids), 1)).to(self.sim.device)
-        lower_joint = 2*upper_joint
-        foot_joint = upper_joint
+        foot_joint = torch.asin(self.cfg.upper_leg_length / self.cfg.lower_leg_length * upper_joint)
+        lower_joint = upper_joint + foot_joint
 
         init_joint_pos = torch.hstack((upper_joint.repeat(1, 3),
                                        inter_joint.repeat(1, 3),
@@ -310,7 +342,7 @@ class StewartManipulationEnv(DirectRLEnv):
 
         plane_height = self.cfg.plane_height/2 \
                      + self.cfg.upper_leg_length * torch.cos(upper_joint) \
-                     + self.cfg.lower_leg_lenth * torch.cos(lower_joint) \
+                     + self.cfg.lower_leg_length * torch.cos(lower_joint) \
                      + self.cfg.foot_height/2
 
         init_stewart_pos = torch.hstack((torch.zeros(len(env_ids), 2, device=self.sim.device),
@@ -335,10 +367,12 @@ class StewartManipulationEnv(DirectRLEnv):
 
     def _reset_target(self, env_ids):
 
-        if False:
-            new_target = 0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2)).to(self.sim.device) - 0.4 * self.cfg.plane_length
-        else:
-            new_target = 1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length
+        # if False:
+        #     new_target = 0.8 * self.cfg.plane_length * torch.rand((len(env_ids), 2)).to(self.sim.device) - 0.4 * self.cfg.plane_length
+        # else:
+        #     new_target = 1e-4 * torch.randint(0, int(0.8 * self.cfg.plane_length // 1e-4 + 1), (len(env_ids), 2), device=self.sim.device) - 0.4 * self.cfg.plane_length
+
+        new_target = torch.zeros((len(env_ids), 2)).to(self.sim.device)
 
         return new_target
 
